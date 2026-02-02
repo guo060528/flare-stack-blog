@@ -74,16 +74,14 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
           href: "/rss.xml",
         },
       ],
-            // 修改这里：删掉 env 判断，直接写死脚本信息
-      scripts: [
+          scripts: [
         {
           src: "https://cloud.umami.is/script.js",
           defer: true,
           "data-website-id": "f497357c-fc14-4195-93be-27a0e2975bee",
-            },
-          ]
-        : [],
-    };
+        },
+      ],
+    }; // 这里是 head 函数的结束
   },
   shellComponent: RootDocument,
 });
