@@ -9,7 +9,7 @@
   },
   "routes": [
     {
-      "pattern": "https://blog.guo0528.dpdns.org",
+      "pattern": "blog.guo0528.dpdns.org",
       "custom_domain": true,
     },
   ],
