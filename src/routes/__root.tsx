@@ -74,12 +74,12 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
           href: "/rss.xml",
         },
       ],
-      scripts: env.VITE_UMAMI_WEBSITE_ID
-        ? [
-            {
-              src: "/stats.js",
-              defer: true,
-              "data-website-id": env.VITE_UMAMI_WEBSITE_ID,
+            // 修改这里：删掉 env 判断，直接写死脚本信息
+      scripts: [
+        {
+          src: "https://cloud.umami.is/script.js",
+          defer: true,
+          "data-website-id": "f497357c-fc14-4195-93be-27a0e2975bee",
             },
           ]
         : [],
