@@ -1,9 +1,22 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, Check, Loader2, MoreHorizontal } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { usePostEditorReturn } from "./post-editor-return";
+import {
+  ArrowLeft,
+  Check,
+  ExternalLink,
+  EyeOff,
+  Pause,
+  Trash2,
+  Undo2,
+} from "lucide-react";
+import { useRef, useState } from "react";
+import { ActionMenu, type ActionMenuItem } from "@/components/ui/action-menu";
+import { Button } from "@/components/ui/button";
 import ConfirmationModal from "@/components/ui/confirmation-modal";
+import { Spinner } from "@/components/ui/spinner";
 import { readPostListLocation } from "../post-manager/list-position";
+import { postStateOf, publishActionLabel } from "../post-state";
+import { PostStatusBadge } from "../post-status-badge";
+import { openPublicPost } from "@/features/posts/utils/open-public-post";
 import { m } from "@/paraglide/messages";
 import { cn } from "@/lib/utils";
 import type { SaveStatus } from "./types";
@@ -13,32 +26,53 @@ interface PostEditorHeaderProps {
   lastSaved: Date | null;
   processState: "IDLE" | "PROCESSING" | "SUCCESS";
   canPublish: boolean;
+  /** A save was refused; going live or back to a draft waits for the Admin. */
+  conflicted: boolean;
+  /** The link was left out of the saves: invalid, reserved or taken. */
+  slugWithheld: boolean;
   hasPublicSnapshot: boolean;
+  /** The draft differs from the published version. */
+  hasUnpublishedChanges: boolean;
+  publicSlug: string | null;
+  title: string;
   onPublish: () => void;
   onUnpublish: () => void;
+  onDiscard: () => void;
+  onDelete: () => void;
+  isDeleting: boolean;
   onOpenInfo: () => void;
   infoOpen: boolean;
   onOpenHistory: () => void;
 }
 
-function saveLabel(saveStatus: SaveStatus, lastSaved: Date | null) {
+function saveLabel(
+  saveStatus: SaveStatus,
+  lastSaved: Date | null,
+  conflicted: boolean,
+  slugWithheld: boolean,
+) {
   switch (saveStatus) {
     case "ERROR":
-      return m.editor_status_save_error();
+      // An Edit Conflict is not a failure: autosave waits for the Admin.
+      return conflicted
+        ? m.editor_status_paused()
+        : m.editor_status_save_error();
     case "SAVING":
       return m.editor_status_saving();
     case "PENDING":
       return m.editor_status_unsaved();
-    default:
-      return lastSaved
-        ? m.editor_status_saved({
-            time: lastSaved.toLocaleTimeString([], {
-              hour12: false,
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-          })
-        : m.editor_status_synced();
+    default: {
+      if (!lastSaved) return m.editor_status_draft_saved();
+      const time = lastSaved.toLocaleTimeString([], {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      // The rest was saved; the field says why the link was not.
+      return slugWithheld
+        ? m.editor_status_saved_except_link({ time })
+        : m.editor_status_saved({ time });
+    }
   }
 }
 
@@ -47,135 +81,151 @@ export function PostEditorHeader({
   lastSaved,
   processState,
   canPublish,
+  conflicted,
+  slugWithheld,
   hasPublicSnapshot,
+  hasUnpublishedChanges,
+  publicSlug,
+  title,
   onPublish,
   onUnpublish,
+  onDiscard,
+  onDelete,
+  isDeleting,
   onOpenInfo,
   infoOpen,
   onOpenHistory,
 }: PostEditorHeaderProps) {
-  const taxonomyReturn = usePostEditorReturn();
   const [returnLocation] = useState(readPostListLocation);
-  const menuRef = useRef<HTMLDetailsElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [confirmingUnpublish, setConfirmingUnpublish] = useState(false);
-  useEffect(() => {
-    const closeOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node))
-        menuRef.current.open = false;
-    };
-    document.addEventListener("mousedown", closeOutside);
-    return () => document.removeEventListener("mousedown", closeOutside);
-  }, []);
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const busy = processState !== "IDLE";
+  const actions: Array<ActionMenuItem> = [];
+  if (publicSlug)
+    actions.push({
+      label: m.admin_posts_action_view_live(),
+      icon: ExternalLink,
+      onSelect: () => openPublicPost(publicSlug),
+    });
+  if (hasPublicSnapshot && hasUnpublishedChanges)
+    actions.push({
+      label: m.editor_header_discard(),
+      icon: Undo2,
+      disabled: busy || conflicted,
+      onSelect: (trigger) => {
+        menuTriggerRef.current = trigger;
+        setConfirmingDiscard(true);
+      },
+    });
+  if (hasPublicSnapshot)
+    actions.push({
+      label: m.editor_header_unpublish(),
+      icon: EyeOff,
+      danger: true,
+      disabled: busy || conflicted,
+      onSelect: (trigger) => {
+        menuTriggerRef.current = trigger;
+        setConfirmingUnpublish(true);
+      },
+    });
+  actions.push({
+    label: m.admin_posts_action_delete_post(),
+    icon: Trash2,
+    danger: true,
+    separator: actions.length > 0,
+    disabled: busy,
+    onSelect: (trigger) => {
+      menuTriggerRef.current = trigger;
+      setConfirmingDelete(true);
+    },
+  });
+  const state = postStateOf({
+    published: hasPublicSnapshot,
+    hasUnpublishedChanges,
+  });
   const publishLabel =
     processState === "PROCESSING"
       ? m.editor_header_processing()
       : processState === "SUCCESS"
         ? m.editor_header_success()
-        : m.editor_header_publish();
+        : publishActionLabel(state);
   return (
     <header className="post-editor-header">
-      {taxonomyReturn ? (
-        <Link
-          to="/admin/tags"
-          search={taxonomyReturn.search}
-          state={{ taxonomyScrollTop: taxonomyReturn.scrollTop }}
-          className="post-editor-back hidden lg:inline-flex"
-        >
-          <ArrowLeft size={17} />
-          {m.taxonomy_manager_title()}
-        </Link>
-      ) : (
-        <Link
-          to="/admin/posts"
-          search={returnLocation}
-          className="post-editor-back hidden lg:inline-flex"
-        >
-          <ArrowLeft size={17} />
-          {m.editor_back_to_posts()}
-        </Link>
-      )}
-      <p
-        role="status"
-        className={cn(
-          "post-editor-save",
-          saveStatus === "ERROR"
-            ? "text-(--fuwari-danger-fg)"
-            : saveStatus === "PENDING"
-              ? "text-(--fuwari-warning-fg)"
-              : "fuwari-text-50",
-        )}
+      <Link
+        to="/admin/posts"
+        search={returnLocation}
+        className="post-editor-back hidden lg:inline-flex"
       >
-        {saveStatus === "SAVING" ? (
-          <Loader2 size={15} className="animate-spin" />
-        ) : saveStatus === "SYNCED" ? (
-          <Check size={15} />
-        ) : null}
-        <span>{saveLabel(saveStatus, lastSaved)}</span>
-      </p>
+        <ArrowLeft size={17} />
+        {m.editor_back_to_posts()}
+      </Link>
+      <div className="post-editor-status">
+        <PostStatusBadge state={state} />
+        <p
+          role="status"
+          className={cn(
+            "post-editor-save",
+            conflicted
+              ? "fuwari-text-50"
+              : saveStatus === "ERROR"
+                ? "text-(--fuwari-danger-fg)"
+                : saveStatus === "PENDING"
+                  ? "text-(--fuwari-warning-fg)"
+                  : "fuwari-text-50",
+          )}
+        >
+          {saveStatus === "SAVING" ? (
+            <Spinner size={15} />
+          ) : conflicted ? (
+            <Pause size={15} />
+          ) : saveStatus === "SYNCED" ? (
+            <Check size={15} />
+          ) : null}
+          <span>
+            {saveLabel(saveStatus, lastSaved, conflicted, slugWithheld)}
+          </span>
+        </p>
+      </div>
       <div className="post-editor-header-actions">
-        <button
-          type="button"
+        <Button
+          variant="plain"
           onClick={onOpenInfo}
           aria-expanded={infoOpen}
           className={cn(
-            "post-editor-text-button",
             infoOpen && "bg-(--fuwari-btn-regular-bg) text-(--fuwari-primary)",
           )}
         >
           {m.editor_info_title()}
-        </button>
-        <button
-          type="button"
-          onClick={onOpenHistory}
-          className="post-editor-text-button"
-        >
+        </Button>
+        <Button variant="plain" onClick={onOpenHistory}>
           {m.editor_history_list_title()}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button
+          variant="primary"
           onClick={onPublish}
           disabled={busy || !canPublish}
-          className="hidden h-9 items-center rounded-lg px-5 text-sm font-medium fuwari-btn-primary disabled:opacity-40 lg:inline-flex"
+          loading={processState === "PROCESSING"}
+          className="hidden lg:inline-flex"
         >
-          {processState === "PROCESSING" ? (
-            <Loader2 size={14} className="mr-1.5 animate-spin" />
-          ) : null}
           {publishLabel}
-        </button>
-        {hasPublicSnapshot && (
-          <details
-            ref={menuRef}
-            className="post-editor-more"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.currentTarget.open = false;
-                event.currentTarget.querySelector("summary")?.focus();
-              }
-            }}
-          >
-            <summary
-              className="post-editor-icon-button"
-              aria-label={m.editor_more_actions()}
-              title={m.editor_more_actions()}
-            >
-              <MoreHorizontal size={19} />
-            </summary>
-            <div className="post-editor-more-menu">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  if (menuRef.current) menuRef.current.open = false;
-                  setConfirmingUnpublish(true);
-                }}
-              >
-                {m.editor_header_unpublish()}
-              </button>
-            </div>
-          </details>
-        )}
+        </Button>
+        <ActionMenu label={m.editor_more_actions()} items={actions} />
       </div>
+      <ConfirmationModal
+        isOpen={confirmingDiscard}
+        title={m.editor_discard_confirm_title()}
+        message={m.editor_discard_confirm_desc()}
+        confirmLabel={m.editor_header_discard()}
+        isDanger
+        onClose={() => setConfirmingDiscard(false)}
+        onConfirm={() => {
+          setConfirmingDiscard(false);
+          onDiscard();
+        }}
+        returnFocus={() => menuTriggerRef.current}
+      />
       <ConfirmationModal
         isOpen={confirmingUnpublish}
         title={m.editor_unpublish_confirm_title()}
@@ -187,7 +237,20 @@ export function PostEditorHeader({
           setConfirmingUnpublish(false);
           onUnpublish();
         }}
-        returnFocus={() => menuRef.current?.querySelector("summary") ?? null}
+        returnFocus={() => menuTriggerRef.current}
+      />
+      <ConfirmationModal
+        isOpen={confirmingDelete}
+        title={m.admin_posts_delete_confirm_title()}
+        message={m.admin_posts_delete_confirm_desc({
+          title: title.trim() || m.common_untitled(),
+        })}
+        confirmLabel={m.admin_posts_delete_confirm_btn()}
+        isDanger
+        isLoading={isDeleting}
+        onClose={() => setConfirmingDelete(false)}
+        onConfirm={onDelete}
+        returnFocus={() => menuTriggerRef.current}
       />
     </header>
   );

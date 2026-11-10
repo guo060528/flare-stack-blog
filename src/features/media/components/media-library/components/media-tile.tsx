@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { cn, formatBytes } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { mediaUsageOf } from "@/features/media/utils/media.utils";
 import { m } from "@/paraglide/messages";
+import { usageCount } from "../media-usage";
 import type { MediaAsset } from "../types";
 
 export function MediaTile({
@@ -15,7 +19,8 @@ export function MediaTile({
   onSelect: (asset: MediaAsset) => void;
 }) {
   const [loaded, setLoaded] = useState(false);
-  const unused = asset.postCount === 0;
+  const usage = mediaUsageOf(asset);
+  const unused = usage === "none";
 
   return (
     <button
@@ -30,9 +35,7 @@ export function MediaTile({
           unused && "ring-2 ring-(--fuwari-warning)",
         )}
       >
-        {!loaded && (
-          <div className="absolute inset-0 animate-pulse bg-(--fuwari-btn-regular-bg)" />
-        )}
+        {!loaded && <Skeleton className="absolute inset-0 rounded-none" />}
         <img
           src={asset.url}
           alt={asset.fileName}
@@ -44,13 +47,13 @@ export function MediaTile({
           onLoad={() => setLoaded(true)}
         />
         {unused ? (
-          <span className="absolute top-2 left-2 h-6 px-2 rounded-full text-[11px] font-medium bg-(--fuwari-warning-bg) text-(--fuwari-warning-fg) grid place-items-center">
+          <Badge tone="warning" size="sm" className="absolute top-2 left-2">
             {m.media_badge_unused()}
-          </span>
+          </Badge>
         ) : asset.isCover ? (
-          <span className="absolute top-2 left-2 h-6 px-2 rounded-full text-[11px] font-medium bg-(--fuwari-primary) text-white grid place-items-center">
+          <Badge tone="primary" size="sm" className="absolute top-2 left-2">
             {m.media_badge_cover()}
-          </span>
+          </Badge>
         ) : null}
       </div>
       <div className="min-w-0 px-0.5">
@@ -62,7 +65,11 @@ export function MediaTile({
                 {m.media_badge_unused()}
               </span>
             ) : (
-              <span>{m.media_post_count({ count: asset.postCount })}</span>
+              <span>
+                {usage === "current"
+                  ? usageCount(asset)
+                  : m.media_badge_revisions()}
+              </span>
             )}
             <span>{formatBytes(asset.sizeInBytes)}</span>
           </div>

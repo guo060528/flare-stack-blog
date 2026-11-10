@@ -1,8 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Copy, ExternalLink, FileText, Upload, X } from "lucide-react";
+import { Copy, ExternalLink, FileText, Images, Upload, X } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { FuwariModal } from "@/components/ui/fuwari-modal";
+import { IconButton } from "@/components/ui/icon-button";
+import { SectionHeading } from "@/components/ui/page-heading";
 import {
   MOTION,
   useContentMotion,
@@ -14,10 +18,49 @@ import {
   ACCEPTED_IMAGE_TYPES,
   MAX_FILE_SIZE,
 } from "@/features/media/media.schema";
-import { linkedPostsQuery } from "@/features/media/queries";
+import { linkedMomentsQuery, linkedPostsQuery } from "@/features/media/queries";
+import { mediaUsageOf } from "@/features/media/utils/media.utils";
 import { formatBytes } from "@/lib/utils";
 import { m } from "@/paraglide/messages";
 import type { MediaAsset } from "../types";
+
+/** The Moments that show the image, linking to their pages. */
+function MomentReferences({ asset }: { asset: MediaAsset }) {
+  const {
+    data: moments = [],
+    isPending,
+    isError,
+    refetch,
+  } = useQuery(linkedMomentsQuery(asset.key, asset.momentCount > 0));
+  return (
+    <section className="media-inspector-usage">
+      <h3>{m.media_used_in_moments({ count: asset.momentCount })}</h3>
+      {isPending ? (
+        <p>{m.media_grid_loading()}</p>
+      ) : isError ? (
+        <p>
+          {m.media_reference_fail()}{" "}
+          <Button variant="text" size="sm" onClick={() => void refetch()}>
+            {m.media_load_retry()}
+          </Button>
+        </p>
+      ) : (
+        moments.map((moment) => (
+          <Link
+            key={moment.id}
+            to="/moments/$id"
+            params={{ id: String(moment.id) }}
+            className="media-reference"
+          >
+            <Images size={16} />
+            <span className="media-reference-title">{moment.title}</span>
+            <ExternalLink size={14} />
+          </Link>
+        ))
+      )}
+    </section>
+  );
+}
 
 export function MediaDetail({
   asset,
@@ -47,6 +90,12 @@ export function MediaDetail({
   }, [asset.key]);
   const fileRef = useRef<HTMLInputElement>(null);
   const busy = isReplacing;
+  const usage = mediaUsageOf(asset);
+  // Posts are listed unless only Moments use the image.
+  const showPosts =
+    usage !== "current" ||
+    asset.postCount > 0 ||
+    asset.revisionOnlyPostCount > 0;
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   const {
@@ -70,17 +119,21 @@ export function MediaDetail({
 
   const content = (
     <>
-      <header className="media-inspector-header">
-        <h2>{m.media_preview_title()}</h2>
-        <button
-          type="button"
-          aria-label={m.common_close()}
-          disabled={preventClose || busy}
-          onClick={onClose}
-        >
-          <X size={19} />
-        </button>
-      </header>
+      <SectionHeading
+        className="media-inspector-header"
+        size="sm"
+        title={m.media_preview_title()}
+        actions={
+          <IconButton
+            label={m.common_close()}
+            size="md"
+            disabled={preventClose || busy}
+            onClick={onClose}
+          >
+            <X size={19} />
+          </IconButton>
+        }
+      />
       <div ref={contentRef}>
         <div className="media-inspector-preview">
           <img
@@ -104,41 +157,62 @@ export function MediaDetail({
             : ""}
           {formatBytes(asset.sizeInBytes)}
         </p>
-        <section className="media-inspector-usage">
-          <h3>
-            {asset.postCount
-              ? m.media_used_in({ count: asset.postCount })
-              : m.media_unreferenced()}
-          </h3>
-          {isPending ? (
-            <p>{m.media_grid_loading()}</p>
-          ) : isError ? (
-            <p>
-              {m.media_reference_fail()}{" "}
-              <button type="button" onClick={() => void refetch()}>
-                {m.media_load_retry()}
-              </button>
-            </p>
-          ) : (
-            linkedPosts.map((post) => (
-              <Link
-                key={post.id}
-                to="/admin/posts/edit/$id"
-                params={{ id: String(post.id) }}
-                className="media-reference"
-              >
-                <FileText size={16} />
-                <span>{post.title}</span>
-                {post.isCover ? <small>{m.media_badge_cover()}</small> : null}
-                <ExternalLink size={14} />
-              </Link>
-            ))
-          )}
-        </section>
+        {showPosts ? (
+          <section className="media-inspector-usage">
+            <h3>
+              {asset.postCount > 0
+                ? m.media_used_in({ count: asset.postCount })
+                : asset.revisionOnlyPostCount > 0
+                  ? m.media_badge_revisions()
+                  : m.media_unreferenced()}
+            </h3>
+            {asset.postCount > 0 && asset.revisionOnlyPostCount > 0 ? (
+              <p className="media-inspector-note">
+                {m.media_revisions_also({ count: asset.revisionOnlyPostCount })}
+              </p>
+            ) : null}
+            {isPending ? (
+              <p>{m.media_grid_loading()}</p>
+            ) : isError ? (
+              <p>
+                {m.media_reference_fail()}{" "}
+                <Button variant="text" size="sm" onClick={() => void refetch()}>
+                  {m.media_load_retry()}
+                </Button>
+              </p>
+            ) : (
+              linkedPosts.map((post) => (
+                <Link
+                  key={post.id}
+                  to="/admin/posts/edit/$id"
+                  params={{ id: String(post.id) }}
+                  className="media-reference"
+                >
+                  <FileText size={16} />
+                  <span className="media-reference-title">{post.title}</span>
+                  <ExternalLink size={14} />
+                  {post.isCover ||
+                  (asset.postCount > 0 && post.revisionsOnly) ? (
+                    <span className="media-reference-badges">
+                      {post.isCover ? (
+                        <Badge tone="primary" size="sm">
+                          {m.media_badge_cover()}
+                        </Badge>
+                      ) : null}
+                      {asset.postCount > 0 && post.revisionsOnly ? (
+                        <Badge size="sm">{m.media_badge_revisions()}</Badge>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </Link>
+              ))
+            )}
+          </section>
+        ) : null}
+        {asset.momentCount > 0 ? <MomentReferences asset={asset} /> : null}
         <div className="media-inspector-actions">
-          <button
-            type="button"
-            className="fuwari-btn-regular"
+          <Button
+            icon={<Copy size={16} />}
             onClick={async () => {
               try {
                 await navigator.clipboard.writeText(
@@ -150,28 +224,28 @@ export function MediaDetail({
               }
             }}
           >
-            <Copy size={16} />
             {m.media_copy_link()}
-          </button>
-          <button
-            type="button"
-            className="fuwari-btn-regular"
+          </Button>
+          <Button
+            icon={<Upload size={16} />}
+            loading={isReplacing}
             disabled={busy}
             onClick={() => fileRef.current?.click()}
           >
-            <Upload size={16} />
             {isReplacing ? m.common_processing() : m.media_replace()}
-          </button>
+          </Button>
         </div>
-        {asset.postCount === 0 ? (
-          <button
-            type="button"
+        {usage === "none" ? (
+          <Button
+            variant="text"
+            size="sm"
+            tone="danger"
             className="media-inspector-delete"
             disabled={busy}
             onClick={() => onDelete(asset)}
           >
             {m.media_delete()}
-          </button>
+          </Button>
         ) : null}
         <input
           ref={fileRef}
@@ -201,7 +275,7 @@ export function MediaDetail({
       open={open}
       onClose={onClose}
       busy={preventClose || busy}
-      className="media-inspector media-inspector-dialog"
+      className="media-inspector media-inspector-dialog admin-workspace"
       label={m.media_preview_title()}
     >
       {content}

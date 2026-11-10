@@ -4,11 +4,12 @@ import {
   resolveUmamiApiConfig,
   umamiClient,
   type UmamiApiConfig,
-} from "@/features/post-popularity/data/umami.client";
+} from "@/features/post-popularity/data/umami-api";
 import {
   buildPostPopularitySnapshot,
   getPostPopularityWindow,
   isPostPopularitySnapshotUsable,
+  isPostPopularityUnchanged,
   POST_POPULARITY_MAX_AGE_MS,
   withViewCounts,
   type PostPopularityMetric,
@@ -91,7 +92,11 @@ function toSyncStatus({
 }
 
 export function createPostPopularityService(dependencies: Dependencies) {
-  async function getStatus(context: BaseContext) {
+  /** The sync status together with the snapshot it describes, from one read. */
+  async function getStatusWithSnapshot(context: BaseContext): Promise<{
+    status: PostPopularitySyncStatus;
+    snapshot: PostPopularitySnapshot | null;
+  }> {
     const now = dependencies.now().getTime();
     const [snapshot, status] = await Promise.all([
       dependencies.readSnapshot(context.env),
@@ -106,13 +111,20 @@ export function createPostPopularityService(dependencies: Dependencies) {
       configError = errorMessage(error);
     }
 
-    return toSyncStatus({
-      configured,
-      configError,
+    return {
+      status: toSyncStatus({
+        configured,
+        configError,
+        snapshot,
+        status,
+        now,
+      }),
       snapshot,
-      status,
-      now,
-    });
+    };
+  }
+
+  async function getStatus(context: BaseContext) {
+    return (await getStatusWithSnapshot(context)).status;
   }
 
   async function sync(
@@ -121,7 +133,10 @@ export function createPostPopularityService(dependencies: Dependencies) {
     const now = dependencies.now();
     const attemptedAt = now.getTime();
     const window = getPostPopularityWindow(now);
-    const previousStatus = await dependencies.readStatus(context.env);
+    const [previousStatus, previousSnapshot] = await Promise.all([
+      dependencies.readStatus(context.env),
+      dependencies.readSnapshot(context.env),
+    ]);
     let snapshotWritten = false;
 
     try {
@@ -138,7 +153,17 @@ export function createPostPopularityService(dependencies: Dependencies) {
       });
       await dependencies.writeSnapshot(context.env, snapshot);
       snapshotWritten = true;
-      await dependencies.invalidate(context);
+      // Skip the purge only when the last sync finished its own purge;
+      // otherwise cached pages may still show what that snapshot replaced.
+      const lastSyncCompleted =
+        previousStatus?.lastError === null &&
+        previousStatus.lastSuccessAt === previousSnapshot?.syncedAt;
+      if (
+        !lastSyncCompleted ||
+        !isPostPopularityUnchanged(previousSnapshot, snapshot, attemptedAt)
+      ) {
+        await dependencies.invalidate(context);
+      }
       const status = {
         lastAttemptAt: attemptedAt,
         lastSuccessAt: attemptedAt,
@@ -214,7 +239,13 @@ export function createPostPopularityService(dependencies: Dependencies) {
     return withViewCounts(posts, snapshot, dependencies.now().getTime());
   }
 
-  return { getStatus, sync, getPopular, attachViewCounts };
+  return {
+    getStatus,
+    getStatusWithSnapshot,
+    sync,
+    getPopular,
+    attachViewCounts,
+  };
 }
 
 export const postPopularityService = createPostPopularityService({

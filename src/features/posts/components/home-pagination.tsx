@@ -19,10 +19,13 @@ function pageNumbers(page: number, total: number, visible: number) {
   return pages;
 }
 
+/** Page numbers for a list of pages at `to`: the home page, or the Moments timeline. */
 export function HomePagination({
+  to = "/",
   page,
   totalPages,
 }: {
+  to?: "/" | "/moments";
   page: number;
   totalPages: number;
 }) {
@@ -55,7 +58,7 @@ export function HomePagination({
         <Link
           key={number}
           activeOptions={{ exact: true, explicitUndefined: true }}
-          to="/"
+          to={to}
           search={{ page: number === 1 ? undefined : number }}
           aria-label={m.home_page_number({ page: number })}
           className={`${buttonClass} active:scale-[0.85]`}
@@ -74,14 +77,14 @@ export function HomePagination({
           type="button"
           disabled
           aria-label={m.home_previous_page()}
-          className={`${buttonClass} opacity-40`}
+          className={`${buttonClass} cursor-not-allowed opacity-50`}
         >
           <ChevronLeft size={28} />
         </button>
       ) : (
         <Link
           activeOptions={{ exact: true, explicitUndefined: true }}
-          to="/"
+          to={to}
           search={{ page: page === 2 ? undefined : page - 1 }}
           aria-label={m.home_previous_page()}
           className={`${buttonClass} text-(--fuwari-primary)`}
@@ -100,14 +103,14 @@ export function HomePagination({
           type="button"
           disabled
           aria-label={m.home_next_page()}
-          className={`${buttonClass} opacity-40`}
+          className={`${buttonClass} cursor-not-allowed opacity-50`}
         >
           <ChevronRight size={28} />
         </button>
       ) : (
         <Link
           activeOptions={{ exact: true, explicitUndefined: true }}
-          to="/"
+          to={to}
           search={{ page: page + 1 }}
           aria-label={m.home_next_page()}
           className={`${buttonClass} text-(--fuwari-primary)`}

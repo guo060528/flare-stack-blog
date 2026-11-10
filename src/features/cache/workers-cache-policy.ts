@@ -11,13 +11,23 @@ export type WorkersCachePurgeTarget =
 
 const HTML_TAG = "html";
 const POSTS_TAG = "posts";
+// Only the pages that render view counts or the popular ranking.
+const POPULARITY_TAG = "popularity";
 const FRIEND_LINKS_TAG = "friend-links";
+// The Moments list pages, the home sidebar's latest Moments, the Moments feeds
+// and the Moments in the sitemap.
+const MOMENTS_TAG = "moments";
 
 const SITE_DOCUMENTS_WITH_POSTS = new Set([
   "/atom.xml",
   "/rss.xml",
   "/feed.json",
-  "/sitemap.xml",
+]);
+
+const SITE_DOCUMENTS_WITH_MOMENTS = new Set([
+  "/moments/atom.xml",
+  "/moments/rss.xml",
+  "/moments/feed.json",
 ]);
 
 const SITE_DOCUMENTS_HTML_ONLY = new Set(["/robots.txt", "/site.webmanifest"]);
@@ -33,13 +43,24 @@ function postCacheTag(slug: string): string {
   return `post:${encodeURIComponent(slug)}`;
 }
 
+// A Moment's own page. Moment ids are never reused, so a deleted Moment's
+// page cannot come back under another.
+function momentCacheTag(id: number | string): string {
+  return `moment:${id}`;
+}
+
+// Every cached response for one Media key, original and transforms alike.
+function mediaCacheTag(key: string): string {
+  return `media:${encodeURIComponent(key)}`;
+}
+
 export function workersCacheKey(url: string | URL): string {
   const parsed = typeof url === "string" ? new URL(url) : url;
   const pathname = parsed.pathname;
-  if (pathname === "/") {
+  if (pathname === "/" || normalizePathname(pathname) === "/moments") {
     const page = parsed.searchParams.get("page");
     return page && page !== "1"
-      ? `/?${new URLSearchParams({ page })}`
+      ? `${pathname}?${new URLSearchParams({ page })}`
       : pathname;
   }
   if (normalizePathname(pathname) === "/posts") {
@@ -69,7 +90,13 @@ export function workersCachePolicy(pathname: string): WorkersCachePolicy {
   const path = normalizePathname(pathname);
 
   if (path === "/") {
-    return { cache: "public", tags: [HTML_TAG, POSTS_TAG] };
+    return {
+      cache: "public",
+      tags: [HTML_TAG, POSTS_TAG, POPULARITY_TAG, MOMENTS_TAG],
+    };
+  }
+  if (path === "/moments") {
+    return { cache: "public", tags: [HTML_TAG, MOMENTS_TAG] };
   }
   if (path === "/posts") {
     return { cache: "public", tags: [HTML_TAG, POSTS_TAG] };
@@ -83,6 +110,12 @@ export function workersCachePolicy(pathname: string): WorkersCachePolicy {
   if (SITE_DOCUMENTS_WITH_POSTS.has(path)) {
     return { cache: "public", tags: [HTML_TAG, POSTS_TAG] };
   }
+  if (path === "/sitemap.xml") {
+    return { cache: "public", tags: [HTML_TAG, POSTS_TAG, MOMENTS_TAG] };
+  }
+  if (SITE_DOCUMENTS_WITH_MOMENTS.has(path)) {
+    return { cache: "public", tags: [HTML_TAG, MOMENTS_TAG] };
+  }
   if (SITE_DOCUMENTS_HTML_ONLY.has(path)) {
     return { cache: "public", tags: [HTML_TAG] };
   }
@@ -90,7 +123,21 @@ export function workersCachePolicy(pathname: string): WorkersCachePolicy {
     return { cache: "public", tags: [] };
   }
   if (path.startsWith("/images/")) {
-    return { cache: "public", tags: [] };
+    // The image route reads the key from the raw path, as here.
+    const key = path.slice("/images/".length);
+    return { cache: "public", tags: key ? [mediaCacheTag(key)] : [] };
+  }
+
+  const momentMatch = /^\/moments\/(.+)$/.exec(path);
+  if (momentMatch?.[1]) {
+    // Only an id names a Moment; any other address is a page no Moment has,
+    // dropped with the lists.
+    return {
+      cache: "public",
+      tags: /^[1-9][0-9]*$/.test(momentMatch[1])
+        ? [HTML_TAG, momentCacheTag(momentMatch[1])]
+        : [HTML_TAG, MOMENTS_TAG],
+    };
   }
 
   const postMatch = /^\/post\/(.+)$/.exec(path);
@@ -110,10 +157,33 @@ export function workersCachePolicy(pathname: string): WorkersCachePolicy {
 
 export function purgeOptionsFor(
   reason: PublicCacheReason | "all",
-  params: { slug?: string; slugs?: string[] },
+  params: {
+    slug?: string;
+    slugs?: string[];
+    momentId?: number;
+    navigationChanged?: boolean;
+  },
 ): WorkersCachePurgeTarget {
   if (reason === "all") {
     return { purgeEverything: true };
+  }
+  if (reason === "moment.changed") {
+    // Going from no Moments to some, or back, shows or hides Moments in the
+    // navigation of every page; every page with it carries the html tag, the
+    // Moments pages and the home page among them. Otherwise only the lists,
+    // the home sidebar and the Moment's own page show it.
+    if (params.navigationChanged) return { tags: [HTML_TAG] };
+    return {
+      tags: [
+        MOMENTS_TAG,
+        ...(params.momentId === undefined
+          ? []
+          : [momentCacheTag(params.momentId)]),
+      ],
+    };
+  }
+  if (reason === "post-popularity.updated") {
+    return { tags: [POPULARITY_TAG] };
   }
   if (reason === "site-config.changed") {
     return { tags: [HTML_TAG] };
@@ -131,6 +201,14 @@ export function purgeOptionsFor(
     return { tags: [POSTS_TAG, postCacheTag(params.slug)] };
   }
   return { tags: [POSTS_TAG] };
+}
+
+/**
+ * Replacing a Media file keeps its key and every address that names it, so
+ * the cached copies of that key go instead (ADR 0009 purges by Cache-Tag).
+ */
+export function mediaPurgeTarget(key: string): WorkersCachePurgeTarget {
+  return { tags: [mediaCacheTag(key)] };
 }
 
 export function applyWorkersCachePolicy(

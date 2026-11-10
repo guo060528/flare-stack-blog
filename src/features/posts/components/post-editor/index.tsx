@@ -2,24 +2,42 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useBlocker, useNavigate } from "@tanstack/react-router";
 import type { JSONContent, Editor as TiptapEditor } from "@tiptap/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { CircleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { useAdminChrome } from "@/components/admin/admin-chrome";
 import { Editor } from "@/components/tiptap-editor";
+import { Button } from "@/components/ui/button";
+import { Callout } from "@/components/ui/callout";
 import ConfirmationModal from "@/components/ui/confirmation-modal";
 import { extensions } from "@/features/posts/editor/config";
 import { CodeBlockHighlightProvider } from "@/features/posts/editor/extensions/code-block/code-block-highlight-context";
 import { postContentOf } from "@/features/posts/editor/extensions/image-placeholder";
 import { postRevisionListQuery } from "@/features/posts/queries";
 import { normalizePostContent } from "@/features/posts/utils/normalize-content";
+import {
+  isValidPostSlug,
+  POST_TITLE_MAX_LENGTH,
+} from "@/features/posts/utils/post-fields";
+import { withoutControlCharacters } from "@/lib/unicode-text";
 import { m } from "@/paraglide/messages";
+import { useDeletePost } from "../post-manager/hooks";
+import { postStateOf, publishActionLabel } from "../post-state";
+import { readPostListLocation } from "../post-manager/list-position";
 import { useAutoSave, usePostActions } from "./hooks";
 import { PostEditorHeader } from "./post-editor-header";
 import { PostEditorMetadata } from "./post-editor-metadata";
 import { PostEditorInfoPanel } from "./post-editor-info-panel";
 import { PostEditorSummary } from "./post-editor-summary";
+import { SLUG_TAKEN_ERROR } from "./post-editor.model";
 import type { PostEditorData, PostEditorProps } from "./types";
 
-export function PostEditor({ initialData, onSave }: PostEditorProps) {
+export function PostEditor({
+  initialData,
+  publicSlug,
+  hasUnpublishedChanges,
+  onSave,
+  onReload,
+}: PostEditorProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { setPrimaryAction, setMobileTitle } = useAdminChrome();
@@ -31,7 +49,6 @@ export function PostEditor({ initialData, onSave }: PostEditorProps) {
     slug: initialData.slug,
     contentJson: normalizePostContent(initialData.contentJson) ?? null,
     publishedAt: initialData.publishedAt,
-    pinnedAt: initialData.pinnedAt,
     tagIds: initialData.tagIds,
     categoryId: initialData.categoryId,
     hasPublicSnapshot: initialData.hasPublicSnapshot,
@@ -58,23 +75,84 @@ export function PostEditor({ initialData, onSave }: PostEditorProps) {
     return editorContentRef.current;
   }, []);
 
-  const { saveStatus, lastSaved, setError, flush } = useAutoSave({
+  const {
+    saveStatus,
+    lastSaved,
+    error: saveError,
+    setError,
+    flush,
+    waitForInFlightSave,
+    discardInFlightSave,
+    conflict,
+    getSaveToken,
+    acceptSaveToken,
+    reportConflict,
+    overwrite,
+  } = useAutoSave({
     post,
     getContent,
     contentEpoch,
+    saveToken: initialData.saveToken,
     onSave,
   });
 
+  // The route mounts a fresh editor once the latest post is read, which also
+  // clears the conflict, so only a failed read needs handling here.
+  const [reloading, setReloading] = useState(false);
+  const reloadLatest = useCallback(async () => {
+    discardInFlightSave();
+    await onReload();
+  }, [discardInFlightSave, onReload]);
+  const handleLoadLatest = useCallback(async () => {
+    setReloading(true);
+    try {
+      await reloadLatest();
+    } catch {
+      toast.error(m.editor_conflict_reload_failed());
+      setReloading(false);
+    }
+  }, [reloadLatest]);
+
+  // Edits not saved yet count as changes, so the state does not lag the typing.
+  const state = postStateOf({
+    published: post.hasPublicSnapshot,
+    hasUnpublishedChanges: hasUnpublishedChanges || saveStatus !== "SYNCED",
+  });
+
+  // Unsaved edits of a deleted post have nowhere to go, so leave unguarded.
+  const deletedRef = useRef(false);
   const { proceed, reset, status } = useBlocker({
-    shouldBlockFn: () => saveStatus !== "SYNCED",
+    shouldBlockFn: () => !deletedRef.current && saveStatus !== "SYNCED",
     withResolver: true,
   });
+
+  const deleteMutation = useDeletePost({
+    onSuccess: () => {
+      deletedRef.current = true;
+      void navigate({ to: "/admin/posts", search: readPostListLocation() });
+    },
+  });
+  const [settlingSave, setSettlingSave] = useState(false);
+  const handleDelete = useCallback(async () => {
+    setSettlingSave(true);
+    discardInFlightSave();
+    await waitForInFlightSave();
+    setSettlingSave(false);
+    deleteMutation.mutate({ id: initialData.id, title: post.title });
+  }, [
+    deleteMutation,
+    discardInFlightSave,
+    initialData.id,
+    post.title,
+    waitForInFlightSave,
+  ]);
 
   const {
     isGeneratingSlug,
     handleGenerateSlug,
     handlePublish,
     handleUnpublish,
+    handleDiscard,
     processState,
     canPublish,
     lockSlug,
@@ -84,6 +162,13 @@ export function PostEditor({ initialData, onSave }: PostEditorProps) {
     setPost,
     setError,
     flush,
+    conflicted: conflict !== null,
+    slugTaken: saveError === SLUG_TAKEN_ERROR,
+    getSaveToken,
+    acceptSaveToken,
+    reportConflict,
+    state,
+    reload: reloadLatest,
   });
 
   const handleEditorCreated = useCallback((editor: TiptapEditor | null) => {
@@ -147,7 +232,7 @@ export function PostEditor({ initialData, onSave }: PostEditorProps) {
         label:
           processState === "PROCESSING"
             ? m.editor_header_processing()
-            : m.editor_header_publish(),
+            : publishActionLabel(state),
         onClick: () => {
           void publishRef.current();
         },
@@ -159,6 +244,7 @@ export function PostEditor({ initialData, onSave }: PostEditorProps) {
     infoOpen,
     post.title,
     processState,
+    state,
     setMobileTitle,
     setPrimaryAction,
   ]);
@@ -174,6 +260,7 @@ export function PostEditor({ initialData, onSave }: PostEditorProps) {
     <PostEditorMetadata
       post={post}
       isGeneratingSlug={isGeneratingSlug}
+      slugTaken={saveError === SLUG_TAKEN_ERROR}
       onPostChange={handlePostChange}
       onGenerateSlug={handleGenerateSlug}
     />
@@ -196,13 +283,53 @@ export function PostEditor({ initialData, onSave }: PostEditorProps) {
           lastSaved={lastSaved}
           processState={processState}
           canPublish={canPublish}
+          conflicted={conflict !== null}
+          slugWithheld={
+            !isValidPostSlug(post.slug) || saveError === SLUG_TAKEN_ERROR
+          }
           hasPublicSnapshot={post.hasPublicSnapshot}
+          hasUnpublishedChanges={state === "published-changed"}
+          publicSlug={post.hasPublicSnapshot ? publicSlug : null}
+          title={post.title}
           onPublish={handlePublish}
-          onUnpublish={handleUnpublish}
+          onUnpublish={() => void handleUnpublish()}
+          onDiscard={() => void handleDiscard()}
+          onDelete={() => void handleDelete()}
+          isDeleting={settlingSave || deleteMutation.isPending}
           infoOpen={infoOpen}
           onOpenInfo={() => setInfoOpen((value) => !value)}
           onOpenHistory={() => void openHistory()}
         />
+        {conflict && (
+          <Callout
+            role="alert"
+            tone="warning"
+            icon={CircleAlert}
+            className="post-editor-conflict"
+            action={
+              <>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  loading={reloading}
+                  onClick={() => void handleLoadLatest()}
+                >
+                  {m.editor_conflict_load_latest()}
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={reloading || saveStatus === "SAVING"}
+                  onClick={() => void overwrite()}
+                >
+                  {m.editor_conflict_overwrite()}
+                </Button>
+              </>
+            }
+          >
+            <strong>{m.editor_conflict_title()}</strong>
+            <p>{m.editor_conflict_desc()}</p>
+          </Callout>
+        )}
         <div className="post-editor-body">
           <CodeBlockHighlightProvider
             snapshotContent={initialData.publicSnapshotContentJson}
@@ -253,8 +380,13 @@ function TextareaTitle({
   return (
     <textarea
       value={value}
-      onChange={(e) => onChange(e.target.value)}
+      // A title holds no line break or hidden character (the API refuses
+      // them), so Enter and pasted ones do not stop it from saving.
+      onChange={(e) =>
+        onChange(withoutControlCharacters(e.target.value, { emoji: true }))
+      }
       rows={1}
+      maxLength={POST_TITLE_MAX_LENGTH}
       placeholder={m.editor_title_placeholder()}
       aria-label={m.editor_title_placeholder()}
       className="post-editor-title w-full resize-none overflow-hidden bg-transparent fuwari-text-90 outline-none placeholder:fuwari-text-30"

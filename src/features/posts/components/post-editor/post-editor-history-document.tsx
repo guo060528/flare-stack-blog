@@ -1,10 +1,10 @@
-import { Loader2 } from "lucide-react";
 import { Editor } from "@/components/tiptap-editor";
+import { Spinner } from "@/components/ui/spinner";
 import { editorSchema } from "@/features/posts/editor/config";
 import { CodeBlockHighlightProvider } from "@/features/posts/editor/extensions/code-block/code-block-highlight-context";
 import { normalizePostContent } from "@/features/posts/utils/normalize-content";
-import type { PostRevisionSnapshot } from "@/features/posts/schema/post-revisions.schema";
 import { m } from "@/paraglide/messages";
+import type { RevisionDetail } from "./post-editor-history.shared";
 import { PostEditorSummary } from "./post-editor-summary";
 
 export function PostEditorHistoryDocument({
@@ -13,7 +13,7 @@ export function PostEditorHistoryDocument({
   editorKey,
   viewingTime,
 }: {
-  snapshot: PostRevisionSnapshot | null;
+  snapshot: RevisionDetail["snapshotJson"] | null;
   isLoading: boolean;
   editorKey: string;
   viewingTime: string;
@@ -21,7 +21,7 @@ export function PostEditorHistoryDocument({
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 py-16 text-sm fuwari-text-50">
-        <Loader2 size={16} className="animate-spin" />
+        <Spinner size={16} />
         {m.editor_history_loading()}
       </div>
     );

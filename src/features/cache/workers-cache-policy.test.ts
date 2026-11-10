@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CACHE_CONTROL } from "@/lib/constants";
 import {
   applyWorkersCachePolicy,
+  mediaPurgeTarget,
   purgeOptionsFor,
   workersCacheKey,
   workersCachePolicy,
@@ -15,6 +16,18 @@ describe("workersCacheKey", () => {
     expect(workersCacheKey("https://blog.example/?page=3")).toBe("/?page=3");
     expect(workersCacheKey("https://blog.example/?page=1")).toBe("/");
     expect(workersCacheKey("https://blog.example/?page=%222%22")).not.toBe("/");
+  });
+
+  it("separates Moments list pages", () => {
+    expect(workersCacheKey("https://blog.example/moments?page=2&x=1")).toBe(
+      "/moments?page=2",
+    );
+    expect(workersCacheKey("https://blog.example/moments?page=1")).toBe(
+      "/moments",
+    );
+    expect(workersCacheKey("https://blog.example/moments/3?page=2")).toBe(
+      "/moments/3",
+    );
   });
 
   it("keeps only tagName on the posts list", () => {
@@ -63,7 +76,7 @@ describe("workersCachePolicy", () => {
   it("tags home and post lists so a publish can clear them together", () => {
     expect(workersCachePolicy("/")).toEqual({
       cache: "public",
-      tags: ["html", "posts"],
+      tags: ["html", "posts", "popularity", "moments"],
     });
     expect(workersCachePolicy("/posts")).toEqual({
       cache: "public",
@@ -75,6 +88,21 @@ describe("workersCachePolicy", () => {
     expect(workersCachePolicy("/post/你好")).toEqual({
       cache: "public",
       tags: ["html", "posts", `post:${encodeURIComponent("你好")}`],
+    });
+  });
+
+  it("tags the Moments list and each Moment's page apart from posts", () => {
+    expect(workersCachePolicy("/moments")).toEqual({
+      cache: "public",
+      tags: ["html", "moments"],
+    });
+    expect(workersCachePolicy("/moments/12")).toEqual({
+      cache: "public",
+      tags: ["html", "moment:12"],
+    });
+    expect(workersCachePolicy("/moments/latest")).toEqual({
+      cache: "public",
+      tags: ["html", "moments"],
     });
   });
 
@@ -96,11 +124,47 @@ describe("workersCachePolicy", () => {
     });
   });
 
-  it("allows images to cache without content tags", () => {
+  it("tags the Moments feeds and the sitemap with moments", () => {
+    for (const path of [
+      "/moments/rss.xml",
+      "/moments/atom.xml",
+      "/moments/feed.json",
+    ]) {
+      expect(workersCachePolicy(path)).toEqual({
+        cache: "public",
+        tags: ["html", "moments"],
+      });
+    }
+    expect(workersCachePolicy("/sitemap.xml")).toEqual({
+      cache: "public",
+      tags: ["html", "posts", "moments"],
+    });
+  });
+
+  it("tags images by their Media key only", () => {
     expect(workersCachePolicy("/images/cover.webp")).toEqual({
       cache: "public",
-      tags: [],
+      tags: ["media:cover.webp"],
     });
+    expect(workersCachePolicy("/images/asset/themes/bg.webp")).toEqual({
+      cache: "public",
+      tags: ["media:asset%2Fthemes%2Fbg.webp"],
+    });
+  });
+
+  it("purges every cached copy of a replaced Media key", () => {
+    const target = mediaPurgeTarget("cover.webp") as { tags: string[] };
+    const policy = workersCachePolicy("/images/cover.webp");
+    if (policy.cache !== "public") throw new Error("images must be public");
+    expect(target.tags).toEqual(policy.tags);
+    for (const path of ["/", "/post/hello", "/images/other.webp"]) {
+      const other = workersCachePolicy(path);
+      if (other.cache !== "public") continue;
+      expect(
+        target.tags.some((tag) => other.tags.includes(tag)),
+        path,
+      ).toBe(false);
+    }
   });
 
   it("keeps APIs, admin, and unsubscribe out of the public cache", () => {
@@ -119,10 +183,56 @@ describe("purgeOptionsFor", () => {
     });
   });
 
-  it("purges post lists when popularity changes", () => {
+  it("purges only the popularity tag when popularity changes", () => {
     expect(purgeOptionsFor("post-popularity.updated", {})).toEqual({
-      tags: ["posts"],
+      tags: ["popularity"],
     });
+  });
+
+  it("reaches only the home pages through the popularity tag", () => {
+    const [tag] = (
+      purgeOptionsFor("post-popularity.updated", {}) as { tags: string[] }
+    ).tags;
+    const paths = [
+      "/",
+      "/posts",
+      "/post/hello",
+      "/friend-links",
+      "/search",
+      "/rss.xml",
+      "/atom.xml",
+      "/feed.json",
+      "/sitemap.xml",
+      "/robots.txt",
+      "/site.webmanifest",
+      "/images/cover.webp",
+    ];
+    const purged = paths.filter((path) => {
+      const policy = workersCachePolicy(path);
+      return policy.cache === "public" && policy.tags.includes(tag!);
+    });
+    expect(purged).toEqual(["/"]);
+  });
+
+  it("still reaches the home pages for every content change", () => {
+    const home = workersCachePolicy("/");
+    if (home.cache !== "public") throw new Error("home must be public");
+    const reasons = [
+      ["post.published", { slug: "a" }],
+      ["post.deleted", { slug: "a" }],
+      ["tag.changed", {}],
+      ["tag.changed", { slugs: ["a"] }],
+      ["category.changed", {}],
+      ["category.changed", { slugs: ["a"] }],
+      ["site-config.changed", {}],
+    ] satisfies Array<Parameters<typeof purgeOptionsFor>>;
+    for (const [reason, params] of reasons) {
+      const target = purgeOptionsFor(reason, params) as { tags: string[] };
+      expect(
+        target.tags.some((tag) => home.tags.includes(tag)),
+        reason,
+      ).toBe(true);
+    }
   });
 
   it("purges encoded slug tags", () => {
@@ -149,8 +259,88 @@ describe("purgeOptionsFor", () => {
     });
   });
 
+  it("purges the Moments lists, the home page and the Moment's page on a Moment change", () => {
+    const target = purgeOptionsFor("moment.changed", {
+      momentId: 7,
+      navigationChanged: false,
+    }) as { tags: string[] };
+    expect(target).toEqual({ tags: ["moments", "moment:7"] });
+    const paths = [
+      "/",
+      "/moments",
+      "/moments/7",
+      "/moments/8",
+      "/moments/rss.xml",
+      "/moments/atom.xml",
+      "/moments/feed.json",
+      "/sitemap.xml",
+      "/posts",
+      "/post/hello",
+      "/friend-links",
+      "/rss.xml",
+    ];
+    const purged = paths.filter((path) => {
+      const policy = workersCachePolicy(path);
+      return (
+        policy.cache === "public" &&
+        policy.tags.some((tag) => target.tags.includes(tag))
+      );
+    });
+    expect(purged).toEqual([
+      "/",
+      "/moments",
+      "/moments/7",
+      "/moments/rss.xml",
+      "/moments/atom.xml",
+      "/moments/feed.json",
+      "/sitemap.xml",
+    ]);
+  });
+
+  it("purges every page with the public navigation when Moments appear or disappear", () => {
+    expect(
+      purgeOptionsFor("moment.changed", {
+        momentId: 7,
+        navigationChanged: true,
+      }),
+    ).toEqual({ tags: ["html"] });
+    for (const path of [
+      "/",
+      "/moments",
+      "/moments/7",
+      "/posts",
+      "/post/hello",
+      "/friend-links",
+      "/search",
+    ]) {
+      const policy = workersCachePolicy(path);
+      if (policy.cache !== "public") throw new Error(`${path} must be public`);
+      expect(policy.tags, path).toContain("html");
+    }
+  });
+
   it("purges everything for a full reset", () => {
     expect(purgeOptionsFor("all", {})).toEqual({ purgeEverything: true });
+  });
+});
+
+describe("CACHE_CONTROL", () => {
+  it("keeps public HTML fresh at the edge for a day and stale for a week", () => {
+    expect(CACHE_CONTROL.html["CDN-Cache-Control"]).toBe(
+      "public, max-age=86400, stale-while-revalidate=604800",
+    );
+  });
+
+  it("leaves the browser always revalidating public HTML", () => {
+    expect(CACHE_CONTROL.html["Cache-Control"]).toBe(
+      "public, max-age=0, must-revalidate",
+    );
+  });
+
+  it("keeps media on the one-hour edge lifetime", () => {
+    expect(CACHE_CONTROL.public["CDN-Cache-Control"]).toBe(
+      "public, max-age=3600, stale-while-revalidate=86400",
+    );
   });
 });
 
@@ -183,5 +373,15 @@ describe("applyWorkersCachePolicy", () => {
       CACHE_CONTROL.public["Cache-Control"],
     );
     expect(response.headers.get("Cache-Tag")).toBe("html,posts,post:hello");
+  });
+
+  it("tags the home page with popularity", () => {
+    const response = applyWorkersCachePolicy(
+      new Request("https://blog.example/?page=2"),
+      new Response("<html></html>"),
+    );
+    expect(response.headers.get("Cache-Tag")).toBe(
+      "html,posts,popularity,moments",
+    );
   });
 });

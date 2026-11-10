@@ -1,8 +1,10 @@
 import { ImageOff } from "lucide-react";
 import { useRef, useState } from "react";
+import { mediaUsageOf } from "@/features/media/utils/media.utils";
 import { formatBytes } from "@/lib/utils";
 import { m } from "@/paraglide/messages";
 import { useMediaGridMotion } from "../hooks/use-media-grid-motion";
+import { usageCount } from "../media-usage";
 import type { MediaAsset } from "../types";
 import type { MediaView } from "./media-toolbar";
 
@@ -40,10 +42,14 @@ export function MediaCollection({
     gridRef,
     `${view}:${items.map((item) => item.key).join(",")}`,
   );
-  const usage = (asset: MediaAsset) =>
-    asset.postCount
-      ? m.media_post_count({ count: asset.postCount })
-      : m.media_unreferenced();
+  const usage = (asset: MediaAsset) => {
+    const state = mediaUsageOf(asset);
+    return state === "current"
+      ? usageCount(asset)
+      : state === "revisions-only"
+        ? m.media_badge_revisions()
+        : m.media_unreferenced();
+  };
   if (view === "list")
     return (
       <div className="media-table-scroll">

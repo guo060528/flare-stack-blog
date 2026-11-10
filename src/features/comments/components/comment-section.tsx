@@ -1,20 +1,23 @@
 import { useMediaQuery } from "@/hooks/use-motion";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { getRouteApi, Link, useLocation } from "@tanstack/react-router";
-import { LogIn } from "lucide-react";
+import { Link, useLocation, useSearch } from "@tanstack/react-router";
+import { CircleAlert, LogIn } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Turnstile, useTurnstile } from "@/components/common/turnstile";
+import { Button, buttonClass } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useComments } from "@/features/comments/hooks/use-comments";
 import { useCommentComposer } from "@/features/comments/hooks/use-comment-composer";
 import { useMutedUsers } from "@/features/muted-users/hooks/use-muted-users";
 import { useScrollToComment } from "@/features/comments/hooks/use-scroll-to-comment";
+import type { CommentTarget } from "@/features/comments/comment-target";
 import {
   commentThreadQuery,
-  rootCommentsByPostIdInfiniteQuery,
+  rootCommentsInfiniteQuery,
 } from "@/features/comments/queries";
-import { authClient } from "@/lib/auth/auth.client";
+import { useSession } from "@/lib/auth/auth-client";
+import { Callout } from "@/components/ui/callout";
 import { m } from "@/paraglide/messages";
 import { CommentConfirmationModal } from "./comment-confirmation-modal";
 import { CommentEditor } from "./comment-editor";
@@ -23,18 +26,25 @@ import { CommentReveal } from "./comment-reveal";
 import { CommentAvatar } from "./comment-avatar";
 import "./comments.css";
 
-const routeApi = getRouteApi("/_public/post/$slug");
 const LOCATE_TOAST = "locate-comment";
 const LOCATE_DELAY_MS = 300;
 
 interface CommentSectionProps {
-  postId: number;
+  /** The Post or the Moment whose Comments this section shows. */
+  target: CommentTarget;
 }
 
-export function CommentSection({ postId }: CommentSectionProps) {
-  const { data: session } = authClient.useSession();
-  const { comment: commentId } = routeApi.useSearch();
-  const listQuery = useInfiniteQuery(rootCommentsByPostIdInfiniteQuery(postId));
+/**
+ * A Post's or a Moment's Comments (ADR 0037): the same section for both,
+ * reading `?comment=` from whichever page it sits on (ADR 0015).
+ */
+export function CommentSection({ target }: CommentSectionProps) {
+  const { data: session } = useSession();
+  const commentId = useSearch({
+    strict: false,
+    select: (search) => (search as { comment?: number }).comment,
+  });
+  const listQuery = useInfiniteQuery(rootCommentsInfiniteQuery(target));
   const {
     data,
     isPending: isLoading,
@@ -45,7 +55,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
   const location = useLocation();
   const compactChallenge = useMediaQuery("(max-width: 380px)");
   const threadQuery = useQuery({
-    ...commentThreadQuery(postId, commentId ?? 0),
+    ...commentThreadQuery(target, commentId ?? 0),
     enabled: commentId != null,
   });
 
@@ -59,10 +69,10 @@ export function CommentSection({ postId }: CommentSectionProps) {
 
   const [locallyMuted, setLocallyMuted] = useState(false);
   const { createComment, deleteComment, isCreating, isDeleting } = useComments(
-    postId,
+    target,
     { onMuted: () => setLocallyMuted(true) },
   );
-  const { muteUser, unmuteUser, isMuting, isUnmuting } = useMutedUsers(postId);
+  const { muteUser, unmuteUser, isMuting, isUnmuting } = useMutedUsers(target);
 
   const [localReveal, setLocalReveal] = useState<{
     rootId: number;
@@ -79,7 +89,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
   useEffect(() => {
     setLocalReveal(null);
     setLocallyMuted(false);
-  }, [postId, session?.user.id]);
+  }, [target.type, target.id, session?.user.id]);
   const loginReturn = (id?: number) => {
     const params = new URLSearchParams(location.searchStr);
     if (id != null) params.set("comment", String(id));
@@ -141,7 +151,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
     startRoot,
     startReply,
   } = useCommentComposer({
-    postId,
+    target,
     userId: session?.user.id,
     isCreating,
     createComment,
@@ -205,17 +215,13 @@ export function CommentSection({ postId }: CommentSectionProps) {
         <Link
           to="/login"
           search={{ redirectTo: loginReturn(replyTarget.commentId) }}
-          className="fuwari-btn-regular"
+          className={buttonClass({ size: "lg" })}
         >
           {m.comments_login()}
         </Link>
-        <button
-          type="button"
-          className="comment-text-button"
-          onClick={replyComposer.onCancel}
-        >
+        <Button variant="plain" size="sm" onClick={replyComposer.onCancel}>
           {m.comments_editor_cancel()}
-        </button>
+        </Button>
       </div>
     )
   ) : null;
@@ -225,16 +231,24 @@ export function CommentSection({ postId }: CommentSectionProps) {
     return (
       <section id="comments" className="comments-section">
         <h2>{m.comments_heading()}</h2>
-        <div className="comment-load-error" role="alert">
-          <span>{m.comments_load_failed()}</span>
-          <button
-            type="button"
-            onClick={() => void listQuery.refetch()}
-            disabled={listQuery.isFetching}
-          >
-            {m.comments_retry()}
-          </button>
-        </div>
+        <Callout
+          className="comment-load-error"
+          tone="danger"
+          icon={CircleAlert}
+          role="alert"
+          action={
+            <Button
+              variant="text"
+              size="sm"
+              onClick={() => void listQuery.refetch()}
+              disabled={listQuery.isFetching}
+            >
+              {m.comments_retry()}
+            </Button>
+          }
+        >
+          {m.comments_load_failed()}
+        </Callout>
       </section>
     );
 
@@ -290,7 +304,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
           <Link
             to="/login"
             search={{ redirectTo: loginReturn() }}
-            className="fuwari-btn-regular"
+            className={buttonClass({ size: "lg" })}
           >
             <LogIn size={16} />
             {m.comments_login()}
@@ -299,7 +313,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
       )}
       <CommentList
         rootComments={rootComments}
-        postId={postId}
+        target={target}
         onReply={(rootIdArg, commentIdArg, userName) => {
           startReply({
             rootId: rootIdArg,
@@ -321,31 +335,38 @@ export function CommentSection({ postId }: CommentSectionProps) {
         revealCommentId={reveal?.commentId}
       />
       {listQuery.isError && (
-        <div className="comment-load-error" role="alert">
-          <span>{m.comments_load_failed()}</span>
-          <button
-            type="button"
-            onClick={() =>
-              void (listQuery.isFetchNextPageError
-                ? fetchNextPage()
-                : listQuery.refetch())
-            }
-            disabled={listQuery.isFetching}
-          >
-            {m.comments_retry()}
-          </button>
-        </div>
+        <Callout
+          className="comment-load-error"
+          tone="danger"
+          icon={CircleAlert}
+          role="alert"
+          action={
+            <Button
+              variant="text"
+              size="sm"
+              onClick={() =>
+                void (listQuery.isFetchNextPageError
+                  ? fetchNextPage()
+                  : listQuery.refetch())
+              }
+              disabled={listQuery.isFetching}
+            >
+              {m.comments_retry()}
+            </Button>
+          }
+        >
+          {m.comments_load_failed()}
+        </Callout>
       )}
       {hasNextPage && !listQuery.isError && (
         <div className="comments-pagination">
-          <button
-            type="button"
-            className="fuwari-btn-regular"
+          <Button
+            size="lg"
             onClick={() => void fetchNextPage()}
             disabled={isFetchingNextPage}
           >
             {isFetchingNextPage ? m.comments_loading() : m.comments_load_more()}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -390,7 +411,7 @@ export function CommentSection({ postId }: CommentSectionProps) {
 function CommentSectionSkeleton() {
   return (
     <div className="space-y-6">
-      <Skeleton className="h-7 w-24 rounded-lg" />
+      <Skeleton className="h-7 w-24" />
       <Skeleton className="h-32 w-full rounded-(--fuwari-radius-large)" />
       <div className="space-y-0">
         {[1, 2, 3].map((i) => (

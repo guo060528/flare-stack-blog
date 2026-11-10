@@ -4,6 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { ORPCError } from "@orpc/client";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { toast } from "sonner";
@@ -13,6 +14,18 @@ import {
 } from "@/features/media/queries";
 import { orpc, orpcClient } from "@/lib/orpc";
 import { m } from "@/paraglide/messages";
+import { MediaInUseError, mediaInUseMessage } from "../media-usage";
+
+/** Counts the posts and Moments that use the image now, for the refusal's message. */
+async function mediaInUseError(key: string) {
+  const [posts, moments] = await Promise.all([
+    orpcClient.media.linkedPosts({ key }).catch(() => []),
+    orpcClient.media.linkedMoments({ key }).catch(() => []),
+  ]);
+  return new MediaInUseError(
+    mediaInUseMessage({ posts: posts.length, moments: moments.length }),
+  );
+}
 
 export function useMediaLibrary() {
   const queryClient = useQueryClient();
@@ -20,7 +33,7 @@ export function useMediaLibrary() {
   const { unused, view } = useSearch({ from: "/admin/media/" });
 
   const setUnusedOnly = (val: boolean) => {
-    navigate({
+    void navigate({
       search: (prev) => ({ ...prev, unused: val || undefined }),
     });
   };
@@ -47,15 +60,28 @@ export function useMediaLibrary() {
   const deleteMutation = useMutation({
     mutationFn: async (keys: Array<string>) => {
       for (const key of keys) {
-        await orpcClient.media.remove({ key });
+        try {
+          await orpcClient.media.remove({ key });
+        } catch (error) {
+          if (error instanceof ORPCError && error.code === "MEDIA_IN_USE") {
+            // The list was stale: show what uses the image now.
+            await invalidate();
+            throw await mediaInUseError(key);
+          }
+          throw error;
+        }
       }
     },
     onSuccess: async () => {
       await invalidate();
       toast.success(m.media_deleted());
     },
-    onError: () => {
-      toast.error(m.media_toast_delete_fail());
+    onError: (error) => {
+      toast.error(
+        error instanceof MediaInUseError
+          ? error.message
+          : m.media_toast_delete_fail(),
+      );
     },
   });
 
@@ -74,14 +100,21 @@ export function useMediaLibrary() {
       await invalidate();
       toast.success(m.media_replace_success());
     },
-    onError: () => {
-      toast.error(m.media_replace_fail());
+    onError: (error) => {
+      const typeChanged =
+        error instanceof ORPCError &&
+        error.code === "MEDIA_INVALID" &&
+        (error.data as { detail?: string } | undefined)?.detail ===
+          "TYPE_CHANGED";
+      toast.error(
+        typeChanged ? m.media_replace_type_changed() : m.media_replace_fail(),
+      );
     },
   });
 
   const loadMore = useCallback(() => {
     if (!isFetchingNextPage && hasNextPage) {
-      fetchNextPage();
+      void fetchNextPage();
     }
   }, [isFetchingNextPage, hasNextPage, fetchNextPage]);
 

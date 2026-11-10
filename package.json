@@ -1,6 +1,6 @@
 {
   "name": "flare-stack-blog",
-  "version": "3.2.0",
+  "version": "3.12.1",
   "private": true,
   "license": "GPL-3.0-only",
   "author": {
@@ -29,7 +29,7 @@
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "cf d1 migrations apply \"$D1_DATABASE_ID\"",
-    "db:migrate:local": "cf d1 migrations apply 00000000-0000-4000-8000-000000000000 --local --persist-to .wrangler/state",
+    "db:migrate:local": "bun scripts/migrate-local.ts",
     "auth:generate-schema": "bunx @better-auth/cli generate --yes --config auth-cli.ts --output src/lib/db/schema/auth.table.ts",
     "release": "export GITHUB_TOKEN=$(gh auth token) && release-it",
     "release:beta": "export GITHUB_TOKEN=$(gh auth token) && release-it --preRelease=beta",
@@ -55,11 +55,11 @@
     "@tanstack/react-devtools": "^0.10.13",
     "@tanstack/react-query": "^5.104.0",
     "@tanstack/react-query-devtools": "^5.104.0",
-    "@tanstack/react-router": "^1.170.40",
+    "@tanstack/react-router": "^1.170.44",
     "@tanstack/react-router-devtools": "^1.167.2",
     "@tanstack/react-router-ssr-query": "^1.167.3",
-    "@tanstack/react-start": "^1.168.59",
-    "@tanstack/router-plugin": "^1.168.41",
+    "@tanstack/react-start": "1.169.2",
+    "@tanstack/router-plugin": "^1.168.46",
     "@tiptap/core": "^3.20.0",
     "@tiptap/extension-blockquote": "^3.20.0",
     "@tiptap/extension-code-block": "^3.20.0",
@@ -87,6 +87,7 @@
     "lucide-react": "^1.48.0",
     "marked": "^17.0.6",
     "mermaid": "^12.1.0",
+    "photoswipe": "^5.4.4",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-hook-form": "^7.89.0",
@@ -98,7 +99,7 @@
     "tailwindcss": "^4.3.3",
     "tw-animate-css": "^1.3.6",
     "worker-mailer": "^1.2.1",
-    "zod": "~4.3.6"
+    "zod": "~4.6.5"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.62.0",
@@ -123,7 +124,9 @@
     "jsdom": "^30.1.1",
     "oxfmt": "^0.71.0",
     "oxlint": "^1.79.0",
+    "oxlint-tsgolint": "^7.0.2004",
     "release-it": "^19.2.4",
+    "saxes": "^6.0.0",
     "tldts": "^7.4.11",
     "typescript": "^7.0.2",
     "vite": "^8.3.1",
