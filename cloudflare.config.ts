@@ -69,6 +69,10 @@ export default defineConfig((ctx) => {
         App: exports.worker({ cache: { enabled: true } }),
         RateLimiter: exports.durableObject({ storage: "sqlite" }),
         PostPublisher: exports.durableObject({ storage: "sqlite" }),
+        // v2 provisioned this namespace for password accounts. v3 removed
+        // password login, so retire the namespace with a tombstone; without it
+        // `cf deploy` rejects the deployment as an orphaned namespace.
+        PasswordHasher: exports.durableObject({ state: "deleted" }),
       },
     },
   };
